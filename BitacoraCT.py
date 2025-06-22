@@ -1,320 +1,701 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-from openpyxl import load_workbook, Workbook
-from openpyxl.utils import get_column_letter
+from tkcalendar import DateEntry
+import openpyxl
+from openpyxl import Workbook
 import os
+import re
+import pyperclip
+from datetime import datetime
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+id_a_modificar = None  # Variable global para almacenar el ID del registro a modificar
 
-class FormularioHoldCT:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Bitácora CT Hold")
-        self.root.geometry("800x750")
-        
-        # Configuración del archivo
-        self.excel_file = "Python Bitácora CT Hold.xlsm"
-        self.sheet_name = "Data"
-        self.header_row = 4  # Fila de encabezados
-        self.start_data_row = 5  # Fila donde comienzan los datos
-        
-        # Variables para combobox
-        self.turno_opciones = ["A", "B", "C", "D"]
-        self.status_opciones = [
-            "Quitar Hold y Mover",
-            "Descontar Quitar Hold y Mover para NCMR"
-        ]
+# =============================================
+# CONFIGURACIÓN - EDITA ESTA RUTA
+RUTA_BASE_DATOS = r"\\mexhome03\Data\Prototype Engineering\Public\MC Front End\Mold\PROCESOS MOLDEO\ramon\01- Documentos\Bitacora CT\Bitacora CT.xlsx"
+# =============================================
 
-        # Crear interfaz
-        self.crear_interfaz()
-        
-        # Inicializar archivo Excel
-        self.inicializar_archivo()
-        
-        # Cargar próximo ID
-        self.cargar_proximo_id()
+
+# Evento Modificar Variable global para almacenar el ID del registro a modificar
+def modificar_evento():
+    """Cargar los datos del registro seleccionado en el formulario para editar"""
+    global id_a_modificar
+    seleccion = treeview.selection()
     
-    def crear_interfaz(self):
-        """Crea todos los elementos de la interfaz gráfica"""
-        # Frame principal con scrollbar
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Canvas y scrollbar
-        canvas = tk.Canvas(main_frame)
-        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Título
-        ttk.Label(scrollable_frame, text="Bitácora CT Hold", font=('Helvetica', 16, 'bold')).grid(
-            row=0, column=0, columnspan=2, pady=(0, 20))
-        
-        # Campos del formulario
-        campos = [
-            ("ID:", "id_entry", False),
-            ("Lot*:", "lot_entry", True),
-            ("Part ID*:", "part_id_entry", True),
-            ("Equipo*:", "equipo_entry", True),
-            ("CT:", "ct_entry", False),
-            ("CP:", "cp_entry", False),
-            ("Comentario:", "comentario_text", False),
-            ("PCB:", "pcb_entry", False),
-            ("Fecha del evento*:", "fecha_entry", True),
-            ("Hora del evento*:", "hora_entry", True),
-            ("Turno*:", "turno_combobox", True),
-            ("RCA:", "rca_entry", False),
-            ("Status*:", "status_combobox", True)
-        ]
-        
-        for i, (label, var_name, obligatorio) in enumerate(campos, start=1):
-            # Etiqueta con asterisco si es obligatorio
-            lbl_text = label.replace("*", "") + ("*" if obligatorio else "")
-            ttk.Label(scrollable_frame, text=lbl_text).grid(row=i, column=0, sticky="e", padx=5, pady=5)
-            
-            if "comentario" in var_name:
-                setattr(self, var_name, tk.Text(scrollable_frame, width=50, height=4))
-                getattr(self, var_name).grid(row=i, column=1, sticky="w", pady=5)
-            elif "combobox" in var_name:
-                valores = self.turno_opciones if "turno" in var_name else self.status_opciones
-                combobox = ttk.Combobox(scrollable_frame, values=valores, state="readonly", width=47)
-                combobox.grid(row=i, column=1, sticky="w", pady=5)
-                setattr(self, var_name, combobox)
-            else:
-                entry = ttk.Entry(scrollable_frame, width=50)
-                entry.grid(row=i, column=1, sticky="w", pady=5)
-                setattr(self, var_name, entry)
-        
-        # Separador
-        ttk.Separator(scrollable_frame).grid(row=len(campos)+1, column=0, columnspan=2, pady=20, sticky="ew")
-        
-        # Botones
-        button_frame = ttk.Frame(scrollable_frame)
-        button_frame.grid(row=len(campos)+2, column=0, columnspan=2, pady=10)
-        
-        ttk.Button(button_frame, text="Guardar", command=self.guardar_datos).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Limpiar", command=self.limpiar_formulario).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Ver Registros", command=self.ver_registros).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Salir", command=self.root.quit).pack(side="left", padx=5)
-        
-        # Nota
-        ttk.Label(scrollable_frame, text="* Campos obligatorios", font=('Helvetica', 8)).grid(
-            row=len(campos)+3, column=0, columnspan=2, pady=(10, 0))
-    
-    def inicializar_archivo(self):
-        """Inicializa el archivo Excel si no existe o está corrupto"""
-        if not os.path.exists(self.excel_file):
+    if not seleccion:
+        messagebox.showwarning("Advertencia", "Selecciona un registro para modificar")
+        return
+
+    item = treeview.item(seleccion[0])
+    valores = item["values"]
+    lote = valores[0]
+
+    # Cargar todos los datos desde Excel
+    datos = load_data()
+    for fila in datos:
+        if str(fila[1]) == str(lote):
+            id_a_modificar = fila[0]  # Guardamos el ID del registro
+            lot_entry.delete(0, tk.END)
+            lot_entry.insert(0, str(fila[1]))
+
+            part_id_entry.delete(0, tk.END)
+            part_id_entry.insert(0, str(fila[2]))
+
+            equipo_combo.set(fila[3])
+            ct_entry.delete(0, tk.END)
+            ct_entry.insert(0, str(fila[4]))
+
+            cp_entry.delete(0, tk.END)
+            cp_entry.insert(0, str(fila[5]))
+
+            cometario_entry.delete("1.0", tk.END)
+            cometario_entry.insert("1.0", str(fila[6]))
+
+            pcb_entry.delete(0, tk.END)
+            pcb_entry.insert(0, str(fila[7]))
+
             try:
-                wb = Workbook()
-                ws = wb.active
-                ws.title = self.sheet_name
-                
-                # Crear estructura inicial
-                for _ in range(3):  # Filas de presentación
-                    ws.append([])
-                
-                # Encabezados en fila 4
-                encabezados = [
-                    "ID", "Lot", "Part ID", "Equipo", "CT", "CP", 
-                    "Comentario", "PCB", "Fecha", "Hora", "Turno", "RCA", "Status"
-                ]
-                ws.append(encabezados)
-                
-                # Formato para encabezados
-                for col in range(1, len(encabezados)+1):
-                    celda = ws.cell(row=self.header_row, column=col)
-                    celda.font = celda.font.copy(bold=True)
-                    celda.alignment = celda.alignment.copy(horizontal="center")
-                
-                # Guardar como .xlsm (macro-enabled)
-                wb.save(self.excel_file)
-                messagebox.showinfo("Información", f"Se creó nuevo archivo: {self.excel_file}")
-            except Exception as e:
-                messagebox.showerror("Error", f"No se pudo crear el archivo: {str(e)}")
+                calendario.set_date(fila[8])
+            except:
+                pass
+
+            hora_entry.delete(0, tk.END)
+            if fila[9] is not None:
+                hora_entry.insert(0, str(fila[9]))
+
+            turno_combo.set(fila[10])
+            rca_combo.set(fila[11])
+            estatus_combo.set(fila[12])
+
+            # Ocultar botón Insertar y mostrar Guardar Cambios
+            insert_button.pack_forget()
+            guardar_buttom.pack(side="left", padx=2, expand=True)
+            return
+
+    messagebox.showerror("Error", "No se pudo encontrar el registro completo en el Excel")
+
+
+
+# Guardas cambios en el archivo excel
+def guardar_cambios():
+    """Actualizar un registro existente en el Excel"""
+    global id_a_modificar
+    if id_a_modificar is None:
+        messagebox.showerror("Error", "No hay registro en modo edición")
+        return
+
+    try:
+        wb = openpyxl.load_workbook(RUTA_BASE_DATOS)
+        ws = wb.active
+
+        for fila in ws.iter_rows(min_row=2):
+            if fila[0].value == id_a_modificar:
+                fila[1].value = lot_entry.get()
+                fila[2].value = part_id_entry.get()
+                fila[3].value = equipo_combo.get()
+                fila[4].value = ct_entry.get()
+                fila[5].value = cp_entry.get()
+                fila[6].value = cometario_entry.get("1.0", "end-1c")
+                fila[7].value = pcb_entry.get()
+                fila[8].value = calendario.get_date().strftime("%m/%d/%Y")
+                fila[9].value = hora_entry.get()
+                fila[10].value = turno_combo.get()
+                fila[11].value = rca_combo.get()
+                fila[12].value = estatus_combo.get()
+                break
+
+        wb.save(RUTA_BASE_DATOS)
+        messagebox.showinfo("Éxito", f"Registro #{id_a_modificar} actualizado correctamente")
+
+        # Resetear estado
+        id_a_modificar = None
+        limpiar_campos()
+        actualizar_treeview()
+        guardar_buttom.pack_forget()
+        insert_button.pack(side="left", padx=2, expand=True)
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo guardar la modificación:\n{str(e)}")
+
+
+
+
+
+def load_data():
+    """Cargar datos desde el archivo Excel"""
+    if not os.path.exists(RUTA_BASE_DATOS):
+        return []
     
-    def cargar_proximo_id(self):
-        """Carga el próximo ID disponible"""
-        proximo_id = self.obtener_proximo_id()
-        self.id_entry.delete(0, tk.END)
-        self.id_entry.insert(0, str(proximo_id))
-    
-    def obtener_proximo_id(self):
-        """Obtiene el próximo ID basado en el máximo existente"""
+    try:
+        wb = openpyxl.load_workbook(RUTA_BASE_DATOS)
+        sheet = wb.active
+        data = []
+        
+        # Comenzar desde la fila 2 (omitir encabezados)
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            # Filtrar filas vacías
+            if any(cell is not None for cell in row):
+                data.append(row)
+        
+        return data
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo cargar el archivo Excel:\n{str(e)}")
+        return []
+
+def validar_lot(lot):
+    """Validar formato del Lote (7 dígitos + . + 1 dígito)"""
+    return re.match(r'^\d{7}\.\d{1}$', lot) is not None
+
+def guardar_datos():
+    """Guardar los datos en el archivo Excel"""
+    # Validar campos obligatorios
+    if not lot_entry.get() or not part_id_entry.get() or not cometario_entry.get("1.0", "end-1c"):
+        messagebox.showerror("Error", "¡Completa los campos obligatorios (Lote, Part ID, Comentario)!")
+        return
+
+    # Validar formato del Lote
+    if not validar_lot(lot_entry.get()):
+        messagebox.showerror("Error", "Formato de Lote inválido. Debe ser: 7 dígitos + . + 1 dígito")
+        return
+
+    # Validar hora (opcional)
+    hora_val = hora_entry.get()
+    if hora_val:
         try:
-            wb = load_workbook(self.excel_file, read_only=True, keep_vba=True)
-            ws = wb[self.sheet_name]
-            
-            max_id = 0
-            for row in ws.iter_rows(min_row=self.start_data_row, max_col=1, values_only=True):
-                if row[0] and str(row[0]).isdigit():
-                    current_id = int(row[0])
+            datetime.strptime(hora_val, "%H:%M")
+        except ValueError:
+            messagebox.showerror("Error", "Formato de hora inválido. Usa HH:MM (24 hrs)")
+            return
+
+    try:
+        if not os.path.exists(RUTA_BASE_DATOS):
+            wb = Workbook()
+            ws = wb.active
+            ws.append([
+                "ID", "Lote", "Part ID", "Equipo", "CT", "CP", "Comentario",
+                "PCB", "Fecha", "Hora", "Turno", "RCA", "Estatus"
+            ])
+            wb.save(RUTA_BASE_DATOS)
+        
+        wb = openpyxl.load_workbook(RUTA_BASE_DATOS)
+        ws = wb.active
+        
+        # Encontrar el último ID válido
+        max_id = 0
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1):
+            if row[0].value is not None:
+                try:
+                    current_id = int(row[0].value)
                     if current_id > max_id:
                         max_id = current_id
-            
-            return max_id + 1 if max_id > 0 else 1
-        except Exception as e:
-            messagebox.showwarning("Advertencia", f"No se pudo leer ID máximo: {str(e)}")
-            return 1
-    
-    def validar_campos(self):
-        """Valida los campos obligatorios"""
-        campos_obligatorios = {
-            "Lot": self.lot_entry.get(),
-            "Part ID": self.part_id_entry.get(),
-            "Equipo": self.equipo_entry.get(),
-            "Turno": self.turno_combobox.get(),
-            "Status": self.status_combobox.get(),
-            "Fecha": self.fecha_entry.get(),
-            "Hora": self.hora_entry.get()
-        }
+                except (ValueError, TypeError):
+                    continue
         
-        for campo, valor in campos_obligatorios.items():
-            if not valor:
-                messagebox.showerror("Error", f"El campo {campo} es obligatorio")
-                widget = getattr(self, f"{campo.lower().replace(' ', '_')}_entry", None) or \
-                         getattr(self, f"{campo.lower().replace(' ', '_')}_combobox", None)
-                if widget:
-                    widget.focus()
-                return False
-        return True
+        siguiente_id = max_id + 1
+
+        ws.append([
+            siguiente_id,
+            lot_entry.get(),
+            part_id_entry.get(),
+            equipo_combo.get(),
+            ct_entry.get(),
+            cp_entry.get(),
+            cometario_entry.get("1.0", "end-1c"),
+            pcb_entry.get(),
+            calendario.get_date().strftime("%m/%d/%Y"),
+            hora_val,
+            turno_combo.get(),
+            rca_combo.get(),
+            estatus_combo.get()
+        ])
+        wb.save(RUTA_BASE_DATOS)
+        messagebox.showinfo("Éxito", f"Registro #{siguiente_id} guardado correctamente")
+        limpiar_campos()
+        actualizar_treeview()
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo guardar:\n{str(e)}")
+
+def limpiar_campos():
+    """Limpiar todos los campos del formulario"""
+    lot_entry.delete(0, tk.END)
+    lot_entry.insert(0, "Lote")
+    part_id_entry.delete(0, tk.END)
+    part_id_entry.insert(0, "Part ID")
+    equipo_combo.set("Equipo")
+    ct_entry.delete(0, tk.END)
+    ct_entry.insert(0, "CT")
+    cp_entry.delete(0, tk.END)
+    cp_entry.insert(0, "CP")
+    pcb_entry.delete(0, tk.END)
+    pcb_entry.insert(0, "PCB")
+    cometario_entry.delete("1.0", tk.END)
+    turno_combo.set("Turno")
+    rca_combo.set("RCA")
+    estatus_combo.set("Estatus")
+    hora_entry.delete(0, tk.END)
+
+def actualizar_treeview():
+    """Actualizar el Treeview con los datos del Excel"""
+    for item in treeview.get_children():
+        treeview.delete(item)
     
-    def guardar_datos(self):
-        """Guarda los datos en el archivo Excel, insertando en la parte superior"""
-        if not self.validar_campos():
+    try:
+        data = load_data()
+        for row in data:
+            # Mostrar solo las columnas seleccionadas en el Treeview
+            treeview.insert("", "end", values=(row[1], row[2], row[3], row[6], row[12]))
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudieron cargar los datos:\n{str(e)}")
+
+def copiar_seleccion():
+    """Copiar los datos seleccionados al portapapeles"""
+    seleccion = treeview.selection()
+    if not seleccion:
+        messagebox.showwarning("Advertencia", "No hay datos seleccionados")
+        return
+
+    item = treeview.item(seleccion[0])
+    texto = "\t".join(str(val) for val in item["values"])
+    pyperclip.copy(texto)
+    messagebox.showinfo("Éxito", "Datos copiados al portapapeles")
+
+def buscar_por_lote():
+    """Buscar registros por número de lote"""
+    lote_buscado = lot_entry.get().strip()
+    if not lote_buscado or lote_buscado == "Lote":
+        messagebox.showwarning("Advertencia", "Ingresa un Lote para buscar")
+        return
+    
+    for item in treeview.get_children():
+        if treeview.item(item)["values"][0] == lote_buscado:
+            treeview.selection_set(item)
+            treeview.focus(item)
+            treeview.see(item)
+            return
+    
+    messagebox.showinfo("Información", f"No se encontró el Lote: {lote_buscado}")
+
+
+# Genera gráfica de frecuencia de turnos por mes
+def generar_grafica_turnos():
+    """Generar gráfica de frecuencia de turnos por mes"""
+    try:
+        # Crear ventana emergente
+        ventana_grafica = tk.Toplevel(root)
+        ventana_grafica.title("Gráfica de Turnos por Mes")
+        ventana_grafica.geometry("800x600")
+        
+        # Frame para controles
+        control_frame = ttk.Frame(ventana_grafica)
+        control_frame.pack(pady=10, fill="x", padx=20)
+        
+        # Etiqueta y combobox para selección de mes
+        ttk.Label(control_frame, text="Seleccionar Mes:").grid(row=0, column=0, padx=5)
+        
+        meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        mes_combo = ttk.Combobox(control_frame, values=meses, width=15)
+        mes_combo.grid(row=0, column=1, padx=5)
+        mes_combo.current(0)  # Seleccionar enero por defecto
+        
+        # Etiqueta y combobox para selección de año
+        ttk.Label(control_frame, text="Seleccionar Año:").grid(row=0, column=2, padx=5)
+        
+        # Obtener el año actual
+        año_actual = datetime.now().year
+        años = [str(año_actual - 1), str(año_actual), str(año_actual + 1)]
+        año_combo = ttk.Combobox(control_frame, values=años, width=8)
+        año_combo.grid(row=0, column=3, padx=5)
+        año_combo.set(str(año_actual))  # Seleccionar año actual por defecto
+        
+        # Botón para generar gráfica
+        btn_generar = ttk.Button(control_frame, text="Generar Gráfica", 
+                                command=lambda: mostrar_grafica(mes_combo.get(), año_combo.get(), ventana_grafica),
+                                style="Accent.TButton")
+        btn_generar.grid(row=0, column=4, padx=10)
+        
+        # Frame para la gráfica
+        grafica_frame = ttk.Frame(ventana_grafica)
+        grafica_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo crear la ventana de gráficas:\n{str(e)}")
+
+# Mostrar gráfica de frecuencia de turnos
+def mostrar_grafica(mes_seleccionado, año_seleccionado, ventana):
+    """Mostrar gráfica de frecuencia de turnos para el mes seleccionado"""
+    try:
+        # Obtener datos del Excel
+        data = load_data()
+        if not data:
+            messagebox.showinfo("Información", "No hay datos para mostrar")
             return
         
-        try:
-            # Cargar archivo existente conservando macros
-            wb = load_workbook(self.excel_file, keep_vba=True)
-            
-            # Verificar si existe la hoja Data
-            if self.sheet_name not in wb.sheetnames:
-                wb.create_sheet(self.sheet_name)
-                # Crear encabezados si es nueva hoja
-                ws = wb[self.sheet_name]
-                encabezados = [
-                    "ID", "Lot", "Part ID", "Equipo", "CT", "CP", 
-                    "Comentario", "PCB", "Fecha", "Hora", "Turno", "RCA", "Status"
-                ]
-                for _ in range(3):  # Filas de presentación
-                    ws.append([])
-                ws.append(encabezados)
-            else:
-                ws = wb[self.sheet_name]
-            
-            # Insertar nueva fila después de los encabezados
-            ws.insert_rows(self.start_data_row)
-            
-            # Preparar datos
-            datos = [
-                self.id_entry.get(),
-                self.lot_entry.get(),
-                self.part_id_entry.get(),
-                self.equipo_entry.get(),
-                self.ct_entry.get(),
-                self.cp_entry.get(),
-                self.comentario_text.get("1.0", tk.END).strip(),
-                self.pcb_entry.get(),
-                self.fecha_entry.get(),
-                self.hora_entry.get(),
-                self.turno_combobox.get(),
-                self.rca_entry.get(),
-                self.status_combobox.get()
-            ]
-            
-            # Escribir datos en la nueva fila (fila 5)
-            for col, valor in enumerate(datos, start=1):
-                ws.cell(row=self.start_data_row, column=col, value=valor)
-            
-            # Guardar conservando macros
-            wb.save(self.excel_file)
-            messagebox.showinfo("Éxito", "Registro guardado correctamente")
-            self.limpiar_formulario()
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo guardar: {str(e)}")
-    
-    def limpiar_formulario(self):
-        """Limpia todos los campos del formulario"""
-        # Guardar ID actual antes de limpiar
-        current_id = self.id_entry.get()
-        
-        # Limpiar todos los campos excepto ID
-        self.lot_entry.delete(0, tk.END)
-        self.part_id_entry.delete(0, tk.END)
-        self.equipo_entry.delete(0, tk.END)
-        self.ct_entry.delete(0, tk.END)
-        self.cp_entry.delete(0, tk.END)
-        self.comentario_text.delete("1.0", tk.END)
-        self.pcb_entry.delete(0, tk.END)
-        self.fecha_entry.delete(0, tk.END)
-        self.hora_entry.delete(0, tk.END)
-        self.turno_combobox.set('')
-        self.rca_entry.delete(0, tk.END)
-        self.status_combobox.set('')
-        
-        # Restaurar ID (o asignar nuevo si estaba vacío)
-        self.id_entry.delete(0, tk.END)
-        if current_id and current_id.isdigit():
-            next_id = int(current_id) + 1
-            self.id_entry.insert(0, str(next_id))
-        else:
-            self.cargar_proximo_id()
-        
-        self.lot_entry.focus()
-    
-    def ver_registros(self):
-        """Muestra una ventana con los registros existentes"""
-        try:
-            wb = load_workbook(self.excel_file, read_only=True, data_only=True)
-            
-            # Verificar si existe la hoja Data
-            if self.sheet_name not in wb.sheetnames:
-                messagebox.showwarning("Advertencia", f"No se encontró la hoja '{self.sheet_name}'")
-                return
-            
-            ws = wb[self.sheet_name]
-            
-            # Crear nueva ventana
-            registros_window = tk.Toplevel(self.root)
-            registros_window.title("Registros Existentes")
-            registros_window.geometry("1300x600")
-            
-            # Treeview para mostrar datos
-            tree = ttk.Treeview(registros_window)
-            
-            # Configurar columnas
-            encabezados = []
-            for cell in ws[self.header_row]:
-                encabezados.append(cell.value)
-            
-            tree["columns"] = encabezados
-            tree.column("#0", width=0, stretch=tk.NO)
-            
-            for encabezado in encabezados:
-                tree.column(encabezado, anchor=tk.W, width=120)
-                tree.heading(encabezado, text=encabezado)
-            
-            # Agregar datos (mostrando los más recientes primero)
-            for row in ws.iter_rows(min_row=self.start_data_row, values_only=True):
-                tree.insert("", 0, values=row)  # Insertar al principio
-            
-            # Scrollbars
-            y_scroll = ttk.Scrollbar(registros_window, orient="vertical", command=tree.yview)
-            x_scroll = ttk.Scrollbar(registros_window, orient="horizontal", command=tree.xview)
-            tree.configure(yscroll=y_scroll.set, xscroll=x_scroll.set)
-            
-            y_scroll.pack(side="right", fill="y")
-            x_scroll.pack(side="bottom", fill="x")
-            tree.pack(fill="both", expand=True)
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudieron cargar los registros: {str(e)}")
+        # Obtener número de mes (1-12)
+        meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+                 "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        num_mes = meses.index(mes_seleccionado) + 1
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = FormularioHoldCT(root)
-    root.mainloop()
+        # Inicializar contadores
+        turnos = {"A": 0, "B": 0, "C": 0, "D": 0}
+        total_eventos = 0
+        
+        for fila in data:
+            try:
+                fecha = fila[8]  # Columna de Fecha
+
+                # Si es cadena, convertirla a datetime
+                if isinstance(fecha, str):
+                    fecha = datetime.strptime(fecha, "%m/%d/%Y")
+
+                # Verificar mes y año
+                if fecha.month == num_mes and fecha.year == int(año_seleccionado):
+                    turno = str(fila[10]).strip().upper()  # Normalizar turno
+                    if turno in turnos:
+                        turnos[turno] += 1
+                        total_eventos += 1
+            except Exception as e:
+                print(f"Error al procesar fila: {fila}\n{e}")
+                continue
+
+        if total_eventos == 0:
+            messagebox.showinfo("Información", f"No hay eventos para {mes_seleccionado} {año_seleccionado}")
+            return
+
+        # Crear figura
+        fig, ax = plt.subplots(figsize=(8, 5))
+        turnos_keys = list(turnos.keys())
+        valores = list(turnos.values())
+
+        bars = ax.bar(turnos_keys, valores, color=['#4e79a7', '#f28e2c', '#e15759', '#76b7b2'])
+
+        for bar in bars:
+            height = bar.get_height()
+            ax.annotate(f'{height}',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3),
+                        textcoords="offset points",
+                        ha='center', va='bottom')
+
+        ax.set_title(f'Frecuencia de Turnos - {mes_seleccionado} {año_seleccionado}', fontsize=14)
+        ax.set_xlabel('Turno', fontsize=12)
+        ax.set_ylabel('Cantidad de Eventos', fontsize=12)
+        ax.set_ylim(0, max(valores) * 1.2)
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.tight_layout()
+
+        # Limpiar frame anterior
+        for widget in ventana.winfo_children():
+            if isinstance(widget, ttk.Frame) and widget.winfo_name() == "!frame2":
+                widget.destroy()
+
+        grafica_frame = ttk.Frame(ventana, name="frame2")
+        grafica_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+        canvas = FigureCanvasTkAgg(fig, master=grafica_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo generar la gráfica:\n{str(e)}")
+
+# Generar_grafica_equipos
+def generar_grafica_equipos():
+    """Ventana para seleccionar mes y año para la gráfica por equipos"""
+    try:
+        ventana_equipos = tk.Toplevel(root)
+        ventana_equipos.title("Gráfica por Equipos")
+        ventana_equipos.geometry("900x600")
+
+        control_frame = ttk.Frame(ventana_equipos)
+        control_frame.pack(pady=10, fill="x", padx=20)
+
+        # Selección de mes
+        ttk.Label(control_frame, text="Mes:").grid(row=0, column=0, padx=5)
+        meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+                 "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        mes_combo = ttk.Combobox(control_frame, values=meses, width=15)
+        mes_combo.grid(row=0, column=1, padx=5)
+        mes_combo.current(0)
+
+        # Selección de año
+        ttk.Label(control_frame, text="Año:").grid(row=0, column=2, padx=5)
+        año_actual = datetime.now().year
+        años = [str(año_actual - 1), str(año_actual), str(año_actual + 1)]
+        año_combo = ttk.Combobox(control_frame, values=años, width=8)
+        año_combo.grid(row=0, column=3, padx=5)
+        año_combo.set(str(año_actual))
+
+        # Botón generar
+        btn_generar = ttk.Button(control_frame, text="Generar Gráfica",
+                                 command=lambda: mostrar_grafica_por_equipos(mes_combo.get(), año_combo.get(), ventana_equipos),
+                                 style="Accent.TButton")
+        btn_generar.grid(row=0, column=4, padx=10)
+
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo crear la ventana de gráficas:\n{str(e)}")
+
+# Mostrar gráfica por equipos
+def mostrar_grafica_por_equipos(mes_seleccionado, año_seleccionado, ventana):
+    """Genera gráfica de eventos por equipo, separados por turno"""
+    try:
+        data = load_data()
+        if not data:
+            messagebox.showinfo("Información", "No hay datos para mostrar")
+            return
+
+        meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+                 "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        num_mes = meses.index(mes_seleccionado) + 1
+
+        # Diccionario: equipo -> {turno -> cantidad}
+        equipos_data = {}
+
+        for fila in data:
+            try:
+                fecha = fila[8]
+                if isinstance(fecha, str):
+                    fecha = datetime.strptime(fecha, "%m/%d/%Y")
+                if fecha.month != num_mes or fecha.year != int(año_seleccionado):
+                    continue
+
+                equipo = str(fila[3]).strip()
+                turno = str(fila[10]).strip().upper()
+
+                if equipo and turno in ["A", "B", "C", "D"]:
+                    if equipo not in equipos_data:
+                        equipos_data[equipo] = {"A": 0, "B": 0, "C": 0, "D": 0}
+                    equipos_data[equipo][turno] += 1
+
+            except Exception as e:
+                print(f"Error al procesar fila: {fila}\n{e}")
+                continue
+
+        if not equipos_data:
+            messagebox.showinfo("Información", f"No hay eventos para {mes_seleccionado} {año_seleccionado}")
+            return
+
+        # Preparar datos para gráfica
+        equipos = sorted(equipos_data.keys())
+        turnos = ["A", "B", "C", "D"]
+        colores = ['#4e79a7', '#f28e2c', '#e15759', '#76b7b2']
+
+        valores_turnos = {t: [equipos_data[e].get(t, 0) for e in equipos] for t in turnos}
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        bottom = [0] * len(equipos)
+        for i, turno in enumerate(turnos):
+            ax.bar(equipos, valores_turnos[turno], bottom=bottom, label=f'Turno {turno}', color=colores[i])
+            bottom = [sum(x) for x in zip(bottom, valores_turnos[turno])]
+
+        ax.set_title(f'Eventos por Equipo y Turno - {mes_seleccionado} {año_seleccionado}', fontsize=14)
+        ax.set_xlabel("Equipo", fontsize=12)
+        ax.set_ylabel("Cantidad de Eventos", fontsize=12)
+        ax.legend()
+        ax.set_xticklabels(equipos, rotation=45, ha='right')
+        ax.grid(axis='y', linestyle='--', alpha=0.5)
+
+        plt.tight_layout()
+
+        # Mostrar en ventana
+        grafica_frame = ttk.Frame(ventana)
+        grafica_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+        canvas = FigureCanvasTkAgg(fig, master=grafica_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo generar la gráfica:\n{str(e)}")
+
+
+
+# Crear ventana principal
+root = tk.Tk()
+root.geometry("1200x650")
+root.title("Bitácora CT Hold")
+
+# Configuración del tema Forest
+style = ttk.Style(root)
+root.option_add("*tearOff", False)
+import sys
+import os
+
+# Para asegurar compatibilidad en .exe
+def recurso_relativo(ruta):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, ruta)
+    return ruta
+
+root.tk.call("source", recurso_relativo("forest-light.tcl"))
+root.tk.call("source", recurso_relativo("forest-dark.tcl"))
+style.theme_use("forest-dark")
+
+# Frame principal
+frame = ttk.Frame(root)
+frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+# Frame para el formulario
+widgets_frame = ttk.LabelFrame(frame, text="Insertar Evento")
+widgets_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+# Configurar columnas para que se distribuyan bien
+widgets_frame.columnconfigure(0, weight=1)
+widgets_frame.columnconfigure(1, weight=1)
+
+# Listas para los Combobox
+combo_list_Equipo = ["Towa20", "Towa21", "Towa22", "Towa23", "Towa24", "Towa25",
+                     "Towa26", "Towa27", "Towa28", "Towa29", "Towa30", "Towa31",
+                     "Towa32", "Towa33", "Otro"]
+combo_list_Turno = ["A", "B", "C", "D"]
+combo_list_RCA = ["Si", "No", "Pendiente"]
+combo_list_Estatus = ["Quitar Hold y Mover", "Descartar Quitar Hold y Mover", "Para NCMR"]
+
+# Lote
+lot_entry = ttk.Entry(widgets_frame)
+lot_entry.insert(0, "Lote")
+lot_entry.bind("<FocusIn>", lambda e: lot_entry.delete(0, "end") if lot_entry.get() == "Lote" else None)
+lot_entry.grid(row=0, column=0, padx=5, pady=(0,5), sticky="ew")
+
+# Part ID
+part_id_entry = ttk.Entry(widgets_frame)
+part_id_entry.insert(0, "Part ID")
+part_id_entry.bind("<FocusIn>", lambda e: part_id_entry.delete(0, "end") if part_id_entry.get() == "Part ID" else None)
+part_id_entry.grid(row=1, column=0, padx=5, pady=(0,5), sticky="ew")
+
+# Equipo
+equipo_combo = ttk.Combobox(widgets_frame, values=combo_list_Equipo)
+equipo_combo.set("Equipo")
+equipo_combo.grid(row=2, column=0, padx=5, pady=(0,5), sticky="ew")
+
+# CT y CP
+ct_entry = ttk.Entry(widgets_frame, justify="center")
+ct_entry.insert(0, "CT")
+ct_entry.bind("<FocusIn>", lambda e: ct_entry.delete(0, "end") if ct_entry.get() == "CT" else None)
+ct_entry.grid(row=3, column=0, sticky="ew", padx=(0,2), pady=2)
+
+cp_entry = ttk.Entry(widgets_frame, justify="center")
+cp_entry.insert(0, "CP")
+cp_entry.bind("<FocusIn>", lambda e: cp_entry.delete(0, "end") if cp_entry.get() == "CP" else None)
+cp_entry.grid(row=3, column=1, sticky="ew", padx=(2,0), pady=2)
+
+# Comentario
+ttk.Label(widgets_frame, text="Comentario:").grid(row=4, column=0, padx=5, pady=5, sticky="w")
+cometario_entry = tk.Text(widgets_frame, height=6, width=30, wrap="word")
+cometario_entry.grid(row=5, column=0, columnspan=2, sticky="ew", pady=2)
+
+# PCB
+pcb_entry = ttk.Entry(widgets_frame, width=15, justify="center")
+pcb_entry.insert(0, "PCB")
+pcb_entry.bind("<FocusIn>", lambda e: pcb_entry.delete(0, "end") if pcb_entry.get() == "PCB" else None)
+pcb_entry.grid(row=6, column=0, sticky="ew", padx=(0,2), pady=2)
+
+# Fecha y hora
+ttk.Label(widgets_frame, text="Fecha:").grid(row=7, column=0, padx=5, pady=4, sticky="w")
+calendario = DateEntry(widgets_frame, date_pattern="mm/dd/yyyy")
+calendario.grid(row=8, column=0, padx=5, pady=5, sticky="ew")
+
+ttk.Label(widgets_frame, text="Hora (24h):").grid(row=7, column=1, padx=5, pady=4, sticky="w")
+hora_entry = ttk.Entry(widgets_frame)
+hora_entry.grid(row=8, column=1, padx=5, pady=5, sticky="ew")
+
+# Turno y RCA
+turno_combo = ttk.Combobox(widgets_frame, values=combo_list_Turno)
+turno_combo.set("Turno")
+turno_combo.grid(row=9, column=0, padx=5, pady=5, sticky="ew")
+
+rca_combo = ttk.Combobox(widgets_frame, values=combo_list_RCA)
+rca_combo.set("RCA")
+rca_combo.grid(row=9, column=1, padx=5, pady=5, sticky="ew")
+
+# Estatus
+estatus_combo = ttk.Combobox(widgets_frame, values=combo_list_Estatus)
+estatus_combo.set("Estatus")
+estatus_combo.grid(row=10, column=0, columnspan=2, sticky="ew", pady=2)
+
+separator = ttk.Separator(widgets_frame)
+separator.grid(row=11, column=0, columnspan=2, sticky="ew", pady=10)
+
+# Botones
+guardar_buttom = ttk.Button((button_frame := ttk.Frame(widgets_frame)), text="Guardar Cambios", command=guardar_cambios, style="Accent.TButton")
+guardar_buttom.pack_forget()  # Ocultar inicialmente
+
+button_frame = ttk.Frame(widgets_frame)
+button_frame.grid(row=12, column=0, columnspan=2, pady=5, sticky="nsew")
+
+insert_button = ttk.Button(button_frame, text="Insertar Evento", command=guardar_datos, style="Accent.TButton")
+insert_button.pack(side="left", padx=2, expand=True)
+
+clear_button = ttk.Button(button_frame, text="Limpiar", command=limpiar_campos)
+clear_button.pack(side="left", padx=2, expand=True)
+
+search_button = ttk.Button(button_frame, text="Buscar", command=buscar_por_lote)
+search_button.pack(side="left", padx=2, expand=True)
+
+# Botón para generar gráfica de turnos
+graph_button = ttk.Button(button_frame, text="Gráfica Turnos", command=generar_grafica_turnos, style="Accent.TButton")
+graph_button.pack(side="left", padx=2, expand=True)
+
+# Botón para generar gráfica de equipos
+graph_equipos_button = ttk.Button(button_frame, text="Gráfica Equipos", command=generar_grafica_equipos, style="Accent.TButton")
+graph_equipos_button.pack(side="left", padx=2, expand=True)
+
+# Frame para el Treeview
+treeFrame = ttk.LabelFrame(frame, text="Registros")
+treeFrame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")  
+
+# Scrollbar para el Treeview
+treescroll = ttk.Scrollbar(treeFrame)
+treescroll.pack(side="right", fill="y")
+
+# Configurar el Treeview
+cols = ("Lote", "Part ID", "Equipo", "Comentario", "Estatus")
+treeview = ttk.Treeview(
+    treeFrame,
+    show="headings",
+    yscrollcommand=treescroll.set,
+    columns=cols,
+    height=12,
+    selectmode="browse"
+)
+
+# Configurar columnas
+treeview.column("Lote", anchor="w", width=80)
+treeview.column("Part ID", anchor="w", width=80)  
+treeview.column("Equipo", anchor="w", width=80)
+treeview.column("Comentario", anchor="w", width=200)
+treeview.column("Estatus", anchor="w", width=200)
+
+# Configurar encabezados
+for col in cols:
+    treeview.heading(col, text=col)
+
+treeview.pack(fill="both", expand=True)
+treescroll.config(command=treeview.yview)
+
+# Botón para copiar selección
+copy_button = ttk.Button(
+    treeFrame,
+    text="Copiar Selección",
+    command=copiar_seleccion,
+    style="Accent.TButton"
+)
+copy_button.pack(pady=5)
+
+#Boton para modificar evento
+edit_button = ttk.Button(treeFrame, text="Modificar", command=modificar_evento, style="Accent.TButton")
+edit_button.pack(pady=5)
+
+
+# Cargar datos iniciales
+actualizar_treeview()
+
+# Centrar la ventana
+root.update()
+root.minsize(1300, 650)
+x = (root.winfo_screenwidth() // 2) - (root.winfo_width() // 2)
+y = (root.winfo_screenheight() // 2) - (root.winfo_height() // 2)
+root.geometry(f"+{x}+{y}")
+
+root.mainloop()
