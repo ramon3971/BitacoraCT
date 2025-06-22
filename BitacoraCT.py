@@ -70,7 +70,7 @@ def modificar_evento():
 
             # Ocultar botón Insertar y mostrar Guardar Cambios
             insert_button.pack_forget()
-            guardar_buttom.pack(side="left", padx=2, expand=True)
+            guardar_button.pack(side="left", padx=2, expand=True)
             return
 
     messagebox.showerror("Error", "No se pudo encontrar el registro completo en el Excel")
@@ -112,7 +112,7 @@ def guardar_cambios():
         id_a_modificar = None
         limpiar_campos()
         actualizar_treeview()
-        guardar_buttom.pack_forget()
+        guardar_button.pack_forget()
         insert_button.pack(side="left", padx=2, expand=True)
     except Exception as e:
         messagebox.showerror("Error", f"No se pudo guardar la modificación:\n{str(e)}")
@@ -618,8 +618,8 @@ separator = ttk.Separator(widgets_frame)
 separator.grid(row=11, column=0, columnspan=2, sticky="ew", pady=10)
 
 # Botones
-guardar_buttom = ttk.Button((button_frame := ttk.Frame(widgets_frame)), text="Guardar Cambios", command=guardar_cambios, style="Accent.TButton")
-guardar_buttom.pack_forget()  # Ocultar inicialmente
+guardar_button = ttk.Button((button_frame := ttk.Frame(widgets_frame)), text="Guardar Cambios", command=guardar_cambios, style="Accent.TButton")
+guardar_button.pack_forget()  # Ocultar inicialmente
 
 button_frame = ttk.Frame(widgets_frame)
 button_frame.grid(row=12, column=0, columnspan=2, pady=5, sticky="nsew")
