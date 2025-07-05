@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from tkcalendar import DateEntry
 import openpyxl
 from openpyxl import Workbook
@@ -9,21 +9,37 @@ import pyperclip
 from datetime import datetime
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import subprocess
+
+from pptx import Presentation
+from pptx.util import Pt
+import sys
+
+# Función para ubicar recursos en un ejecutable PyInstaller
+def recurso_relativo(ruta_relativa):
+    """Obtiene la ruta absoluta del recurso, compatible con PyInstaller."""
+    try:
+        # PyInstaller crea una carpeta temporal en _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, ruta_relativa)
 
 class BitacoraCTApp:
     def __init__(self, root):
         self.root = root
-        self.version = "1.0.0"
+        self.version = "1.3.2"  # Versión actualizada
         self.ruta_base_datos = r"\\mexhome03\Data\Prototype Engineering\Public\MC Front End\Mold\PROCESOS MOLDEO\ramon\01- Documentos\Bitacora CT\Bitacora CT.xlsx"
         self.id_a_modificar = None
-        
+
         # Definir las listas para los Combobox
         self.combo_list_Equipo = ["Towa20", "Towa21", "Towa22", "Towa23", "Towa24", "Towa25",
                                  "Towa26", "Towa27", "Towa28", "Towa29", "Towa30", "Towa31",
                                  "Towa32", "Towa33", "Otro"]
         self.combo_list_Turno = ["A", "B", "C", "D"]
         self.combo_list_RCA = ["Si", "No", "Pendiente"]
-        self.combo_list_Estatus = ["Quitar Hold y Mover", "Descontar Quitar Hold y Mover", "Para NCMR"]
+        self.combo_list_Estatus = ["Quitar Hold y Mover", "Descontar Quitar Hold y Mover", "Para NCMR","Pendiente"]
         
         self.configurar_interfaz()
         self.crear_widgets()
@@ -37,21 +53,13 @@ class BitacoraCTApp:
         # Configuración del tema
         style = ttk.Style(self.root)
         self.root.option_add("*tearOff", False)
-        self.root.tk.call("source", self.recurso_relativo("forest-light.tcl"))
-        self.root.tk.call("source", self.recurso_relativo("forest-dark.tcl"))
+        self.root.tk.call("source", recurso_relativo("forest-light.tcl"))
+        self.root.tk.call("source", recurso_relativo("forest-dark.tcl"))
         style.theme_use("forest-dark")
 
         # Frame principal
         self.frame = ttk.Frame(self.root)
         self.frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-    def recurso_relativo(self, ruta):
-        """Para asegurar compatibilidad en .exe"""
-        import sys
-        import os
-        if hasattr(sys, '_MEIPASS'):
-            return os.path.join(sys._MEIPASS, ruta)
-        return ruta
 
     def crear_widgets(self):
         self.crear_formulario()
@@ -231,14 +239,269 @@ class BitacoraCTApp:
             style="Accent.TButton"
         ).pack(side="left", padx=2, expand=True)
 
-    def centrar_ventana(self):
-        self.root.update()
-        self.root.minsize(1300, 650)
-        x = (self.root.winfo_screenwidth() // 2) - (self.root.winfo_width() // 2)
-        y = (self.root.winfo_screenheight() // 2) - (self.root.winfo_height() // 2)
-        self.root.geometry(f"+{x}+{y}")
+        # Botón para generar CSV
+        ttk.Button(
+            botones_tree_frame,
+            text="Generar CSV",
+            command=self.generar_csv,
+            style="Accent.TButton"
+        ).pack(side="left", padx=2, expand=True)
 
-    # ============ Funcionalidades principales ============
+        # Botón para generar reporte PPT
+        ttk.Button(
+            botones_tree_frame,
+            text="Generar Reporte RCA",
+            command=self.generar_reporte_ppt,
+            style="Accent.TButton"
+        ).pack(side="left", padx=2, expand=True)
+
+    def generar_reporte_ppt(self):
+        """Generar reporte de PowerPoint con los datos seleccionados"""
+        seleccion = self.treeview.selection()
+        
+        if not seleccion:
+            messagebox.showwarning("Advertencia", "Selecciona un registro primero")
+            return
+
+        # Obtener datos del registro seleccionado
+        item = self.treeview.item(seleccion[0])
+        lote = item["values"][0]
+        
+        # Buscar en los datos de Excel para obtener todos los campos
+        datos = self.load_data()
+        registro_completo = None
+        for fila in datos:
+            if str(fila[1]) == str(lote):
+                registro_completo = {
+                    'defect_code':" ",   # Código de defecto (placeholder)
+                    'part_id': fila[2],  # Part ID
+                    'lot_id': fila[1],   # Lote
+                    'equipo': fila[3],   # Equipo
+                    'comentario': fila[6],  # Comentario
+                    'fecha': fila[8],    # Fecha
+                    'turno': fila[10],   # Turno
+                    'estatus': fila[12], # Estatus
+                    'rca': fila[11],     # RCA
+                    'hora': fila[9]      # Hora
+                    
+                }
+                break
+        
+        if not registro_completo:
+            messagebox.showerror("Error", "No se encontraron los datos completos del registro")
+            return
+
+        # Ejecutar en la misma aplicación
+        report_window = tk.Toplevel(self.root)
+        report_app = DefectReportApp(report_window, initial_data=registro_completo)
+
+    def load_data(self):
+        """Cargar datos desde el archivo Excel"""
+        if not os.path.exists(self.ruta_base_datos):
+            return []
+        
+        try:
+            wb = openpyxl.load_workbook(self.ruta_base_datos)
+            sheet = wb.active
+            data = []
+            
+            # Comenzar desde la fila 2 (omitir encabezados)
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                # Filtrar filas vacías
+                if any(cell is not None for cell in row):
+                    data.append(row)
+            
+            return data
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo cargar el archivo Excel:\n{str(e)}")
+            return []
+
+    def validar_lot(self, lot):
+        """Validar formato del Lote (7 dígitos + . + 1 dígito)"""
+        return re.match(r'^\d{7}\.\d{1}$', lot) is not None
+
+    def guardar_datos(self, intentos=3):
+        """Guardar los datos en el archivo Excel con confirmación y verificación de ID en tiempo real"""
+        # Validar campos obligatorios
+        if not self.lot_entry.get() or not self.part_id_entry.get() or not self.cometario_entry.get("1.0", "end-1c"):
+            messagebox.showerror("Error", "¡Completa los campos obligatorios (Lote, Part ID, Comentario)!")
+            return
+
+        # Validar formato del Lote
+        if not self.validar_lot(self.lot_entry.get()):
+            messagebox.showerror("Error", "Formato de Lote inválido. Debe ser: 7 dígitos + . + 1 dígito")
+            return
+
+        # Validar hora (opcional)
+        hora_val = self.hora_entry.get()
+        if hora_val:
+            try:
+                datetime.strptime(hora_val, "%H:%M")
+            except ValueError:
+                messagebox.showerror("Error", "Formato de hora inválido. Usa HH:MM (24 hrs)")
+                return
+
+        # Mostrar resumen antes de guardar
+        resumen = (
+            f"Lote: {self.lot_entry.get()}\n"
+            f"Part ID: {self.part_id_entry.get()}\n"
+            f"Equipo: {self.equipo_combo.get()}\n"
+            f"Comentario: {self.cometario_entry.get('1.0', 'end-1c')[:50]}...\n\n"
+            "¿Deseas guardar este registro?"
+        )
+        
+        confirmar = messagebox.askyesno("Confirmar Registro", resumen)
+        if not confirmar:
+            return
+
+        for intento in range(intentos):
+            try:
+                if not os.path.exists(self.ruta_base_datos):
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.append([
+                        "ID", "Lote", "Part ID", "Equipo", "CT", "CP", "Comentario",
+                        "PCB", "Fecha", "Hora", "Turno", "RCA", "Estatus"
+                    ])
+                    wb.save(self.ruta_base_datos)
+                    siguiente_id = 1  # Primer ID para archivo nuevo
+                else:
+                    # Cargar archivo y verificar ID justo antes de insertar
+                    wb = openpyxl.load_workbook(self.ruta_base_datos)
+                    ws = wb.active
+                    
+                    # Buscar el máximo ID y verificar duplicados
+                    ids_existentes = set()
+                    max_id = 0
+                    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1):
+                        if row[0].value is not None:
+                            try:
+                                current_id = int(row[0].value)
+                                ids_existentes.add(current_id)
+                                if current_id > max_id:
+                                    max_id = current_id
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    siguiente_id = max_id + 1
+                    
+                    # Verificar si el ID ya existe (protección adicional)
+                    while siguiente_id in ids_existentes:
+                        siguiente_id += 1
+
+                # Preparar datos para insertar
+                datos_nuevos = [
+                    siguiente_id,
+                    self.lot_entry.get(),
+                    self.part_id_entry.get(),
+                    self.equipo_combo.get(),
+                    self.ct_entry.get(),
+                    self.cp_entry.get(),
+                    self.cometario_entry.get("1.0", "end-1c"),
+                    self.pcb_entry.get(),
+                    self.calendario.get_date().strftime("%m/%d/%Y"),
+                    hora_val,
+                    self.turno_combo.get(),
+                    self.rca_combo.get(),
+                    self.estatus_combo.get()
+                ]
+
+                # Insertar y guardar
+                ws.append(datos_nuevos)
+                
+                try:
+                    wb.save(self.ruta_base_datos)
+                    
+                    # Mensaje de confirmación después de guardar
+                    mensaje_exito = (
+                        f"Registro #{siguiente_id} guardado correctamente\n\n"
+                        f"Lote: {self.lot_entry.get()}\n"
+                        f"Part ID: {self.part_id_entry.get()}\n"
+                        f"Equipo: {self.equipo_combo.get()}\n"
+                        f"Fecha: {self.calendario.get_date().strftime('%d/%m/%Y')}"
+                    )
+                    messagebox.showinfo("Éxito", mensaje_exito)
+                    
+                    self.limpiar_campos()
+                    self.actualizar_treeview()
+                    return  # Salir si todo fue exitoso
+                    
+                except PermissionError as pe:
+                    if intento < intentos - 1:
+                        # Esperar un poco antes de reintentar
+                        time.sleep(0.5)
+                        continue
+                    raise  # Relanzar la excepción si se agotan los intentos
+
+            except Exception as e:
+                if intento == intentos - 1:  # Último intento fallido
+                    error_msg = f"No se pudo guardar después de {intentos} intentos:\n{str(e)}"
+                    if isinstance(e, PermissionError):
+                        error_msg += "\n\nEl archivo está siendo usado por otro programa o usuario."
+                    messagebox.showerror("Error", error_msg)
+                continue
+
+    def limpiar_campos(self):
+        """Limpiar todos los campos del formulario"""
+        respuesta = messagebox.askyesno("Confirmar Limpieza", "¿Estás seguro que deseas limpiar todos los campos?")
+    
+        if respuesta:
+            self.lot_entry.delete(0, tk.END)
+            self.lot_entry.insert(0, "Lote")
+            self.part_id_entry.delete(0, tk.END)
+            self.part_id_entry.insert(0, "Part ID")
+            self.equipo_combo.set("Equipo")
+            self.ct_entry.delete(0, tk.END)
+            self.ct_entry.insert(0, "CT")
+            self.cp_entry.delete(0, tk.END)
+            self.cp_entry.insert(0, "CP")
+            self.pcb_entry.delete(0, tk.END)
+            self.pcb_entry.insert(0, "PCB")
+            self.cometario_entry.delete("1.0", tk.END)
+            self.turno_combo.set("Turno")
+            self.rca_combo.set("RCA")
+            self.estatus_combo.set("Estatus")
+            self.hora_entry.delete(0, tk.END)
+            self.id_a_modificar = None
+            self.guardar_button.pack_forget()
+            self.insert_button.pack(side="left", padx=2, expand=True)
+
+
+    def actualizar_treeview(self):
+        """Actualizar el Treeview con los datos del Excel"""
+        for item in self.treeview.get_children():
+            self.treeview.delete(item)
+        
+        try:
+            data = self.load_data()
+            for row in data:
+                # Mostrar solo las columnas seleccionadas en el Treeview
+                self.treeview.insert("", "end", values=(row[1], row[2], row[3], row[6], row[12]))
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudieron cargar los datos:\n{str(e)}")
+
+    def copiar_seleccion(self):
+        """Copiar los datos seleccionados al portapapeles con encabezados"""
+        seleccion = self.treeview.selection()
+        if not seleccion:
+            messagebox.showwarning("Advertencia", "No hay datos seleccionados")
+            return
+
+        # Obtener los encabezados de las columnas
+        encabezados = [self.treeview.heading(col)["text"] for col in self.treeview["columns"]]
+        
+        # Obtener los valores seleccionados
+        item = self.treeview.item(seleccion[0])
+        valores = item["values"]
+        
+        # Combinar encabezados y valores con formato
+        texto_con_encabezados = ""
+        for encabezado, valor in zip(encabezados, valores):
+            texto_con_encabezados += f"{encabezado}: {valor}\n"
+        
+        # Copiar al portapapeles
+        pyperclip.copy(texto_con_encabezados.strip())
+        messagebox.showinfo("Éxito", "Datos copiados al portapapeles (con encabezados)")
 
     def modificar_evento(self):
         """Cargar los datos del registro seleccionado en el formulario para editar"""
@@ -336,240 +599,6 @@ class BitacoraCTApp:
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo guardar la modificación:\n{str(e)}")
 
-    def load_data(self):
-        """Cargar datos desde el archivo Excel"""
-        if not os.path.exists(self.ruta_base_datos):
-            return []
-        
-        try:
-            wb = openpyxl.load_workbook(self.ruta_base_datos)
-            sheet = wb.active
-            data = []
-            
-            # Comenzar desde la fila 2 (omitir encabezados)
-            for row in sheet.iter_rows(min_row=2, values_only=True):
-                # Filtrar filas vacías
-                if any(cell is not None for cell in row):
-                    data.append(row)
-            
-            return data
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo cargar el archivo Excel:\n{str(e)}")
-            return []
-
-    def validar_lot(self, lot):
-        """Validar formato del Lote (7 dígitos + . + 1 dígito)"""
-        return re.match(r'^\d{7}\.\d{1}$', lot) is not None
-
-    def guardar_datos(self):
-        """Guardar los datos en el archivo Excel"""
-        # Validar campos obligatorios
-        if not self.lot_entry.get() or not self.part_id_entry.get() or not self.cometario_entry.get("1.0", "end-1c"):
-            messagebox.showerror("Error", "¡Completa los campos obligatorios (Lote, Part ID, Comentario)!")
-            return
-
-        # Validar formato del Lote
-        if not self.validar_lot(self.lot_entry.get()):
-            messagebox.showerror("Error", "Formato de Lote inválido. Debe ser: 7 dígitos + . + 1 dígito")
-            return
-
-        # Validar hora (opcional)
-        hora_val = self.hora_entry.get()
-        if hora_val:
-            try:
-                datetime.strptime(hora_val, "%H:%M")
-            except ValueError:
-                messagebox.showerror("Error", "Formato de hora inválido. Usa HH:MM (24 hrs)")
-                return
-
-        try:
-            if not os.path.exists(self.ruta_base_datos):
-                wb = Workbook()
-                ws = wb.active
-                ws.append([
-                    "ID", "Lote", "Part ID", "Equipo", "CT", "CP", "Comentario",
-                    "PCB", "Fecha", "Hora", "Turno", "RCA", "Estatus"
-                ])
-                wb.save(self.ruta_base_datos)
-            
-            wb = openpyxl.load_workbook(self.ruta_base_datos)
-            ws = wb.active
-            
-            # Encontrar el último ID válido
-            max_id = 0
-            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1):
-                if row[0].value is not None:
-                    try:
-                        current_id = int(row[0].value)
-                        if current_id > max_id:
-                            max_id = current_id
-                    except (ValueError, TypeError):
-                        continue
-            
-            siguiente_id = max_id + 1
-
-            ws.append([
-                siguiente_id,
-                self.lot_entry.get(),
-                self.part_id_entry.get(),
-                self.equipo_combo.get(),
-                self.ct_entry.get(),
-                self.cp_entry.get(),
-                self.cometario_entry.get("1.0", "end-1c"),
-                self.pcb_entry.get(),
-                self.calendario.get_date().strftime("%m/%d/%Y"),
-                hora_val,
-                self.turno_combo.get(),
-                self.rca_combo.get(),
-                self.estatus_combo.get()
-            ])
-            wb.save(self.ruta_base_datos)
-            messagebox.showinfo("Éxito", f"Registro #{siguiente_id} guardado correctamente")
-            self.limpiar_campos()
-            self.actualizar_treeview()
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo guardar:\n{str(e)}")
-
-    def limpiar_campos(self):
-        """Limpiar todos los campos del formulario"""
-        respuesta = messagebox.askyesno( "Confirmar Limpieza", "¿Estás seguro que deseas limpiar todos los campos? ")
-    
-        if respuesta:
-            self.lot_entry.delete(0, tk.END)
-            self.lot_entry.insert(0, "Lote")
-            self.part_id_entry.delete(0, tk.END)
-            self.part_id_entry.insert(0, "Part ID")
-            self.equipo_combo.set("Equipo")
-            self.ct_entry.delete(0, tk.END)
-            self.ct_entry.insert(0, "CT")
-            self.cp_entry.delete(0, tk.END)
-            self.cp_entry.insert(0, "CP")
-            self.pcb_entry.delete(0, tk.END)
-            self.pcb_entry.insert(0, "PCB")
-            self.cometario_entry.delete("1.0", tk.END)
-            self.turno_combo.set("Turno")
-            self.rca_combo.set("RCA")
-            self.estatus_combo.set("Estatus")
-            self.hora_entry.delete(0, tk.END)
-
-    def guardar_datos(self):
-        """Guardar los datos en el archivo Excel con confirmación"""
-        # Validar campos obligatorios
-        if not self.lot_entry.get() or not self.part_id_entry.get() or not self.cometario_entry.get("1.0", "end-1c"):
-            messagebox.showerror("Error", "¡Completa los campos obligatorios (Lote, Part ID, Comentario)!")
-            return
-
-        # Validar formato del Lote
-        if not self.validar_lot(self.lot_entry.get()):
-            messagebox.showerror("Error", "Formato de Lote inválido. Debe ser: 7 dígitos + . + 1 dígito")
-            return
-
-        # Validar hora (opcional)
-        hora_val = self.hora_entry.get()
-        if hora_val:
-            try:
-                datetime.strptime(hora_val, "%H:%M")
-            except ValueError:
-                messagebox.showerror("Error", "Formato de hora inválido. Usa HH:MM (24 hrs)")
-                return
-
-        # Mostrar resumen antes de guardar
-        resumen = (
-            f"Lote: {self.lot_entry.get()}\n"
-            f"Part ID: {self.part_id_entry.get()}\n"
-            f"Equipo: {self.equipo_combo.get()}\n"
-            f"Comentario: {self.cometario_entry.get('1.0', 'end-1c')[:50]}...\n\n"
-            "¿Deseas guardar este registro?"
-        )
-        
-        confirmar = messagebox.askyesno("Confirmar Registro", resumen)
-        if not confirmar:
-            return
-
-        try:
-            if not os.path.exists(self.ruta_base_datos):
-                wb = Workbook()
-                ws = wb.active
-                ws.append([
-                    "ID", "Lote", "Part ID", "Equipo", "CT", "CP", "Comentario",
-                    "PCB", "Fecha", "Hora", "Turno", "RCA", "Estatus"
-                ])
-                wb.save(self.ruta_base_datos)
-            
-            wb = openpyxl.load_workbook(self.ruta_base_datos)
-            ws = wb.active
-            
-            # Encontrar el último ID válido
-            max_id = 0
-            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=1):
-                if row[0].value is not None:
-                    try:
-                        current_id = int(row[0].value)
-                        if current_id > max_id:
-                            max_id = current_id
-                    except (ValueError, TypeError):
-                        continue
-            
-            siguiente_id = max_id + 1
-
-            ws.append([
-                siguiente_id,
-                self.lot_entry.get(),
-                self.part_id_entry.get(),
-                self.equipo_combo.get(),
-                self.ct_entry.get(),
-                self.cp_entry.get(),
-                self.cometario_entry.get("1.0", "end-1c"),
-                self.pcb_entry.get(),
-                self.calendario.get_date().strftime("%m/%d/%Y"),
-                hora_val,
-                self.turno_combo.get(),
-                self.rca_combo.get(),
-                self.estatus_combo.get()    
-            ])
-            wb.save(self.ruta_base_datos)
-            
-            # Mensaje de confirmación después de guardar
-            mensaje_exito = (
-                f"Registro #{siguiente_id} guardado correctamente\n\n"
-                f"Lote: {self.lot_entry.get()}\n"
-                f"Part ID: {self.part_id_entry.get()}\n"
-                f"Equipo: {self.equipo_combo.get()}\n"
-                f"Fecha: {self.calendario.get_date().strftime('%d/%m/%Y')}"
-            )
-            messagebox.showinfo("Éxito", mensaje_exito)
-            
-            self.limpiar_campos()
-            self.actualizar_treeview()
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo guardar:\n{str(e)}")
-
-    def actualizar_treeview(self):
-        """Actualizar el Treeview con los datos del Excel"""
-        for item in self.treeview.get_children():
-            self.treeview.delete(item)
-        
-        try:
-            data = self.load_data()
-            for row in data:
-                # Mostrar solo las columnas seleccionadas en el Treeview
-                self.treeview.insert("", "end", values=(row[1], row[2], row[3], row[6], row[12]))
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudieron cargar los datos:\n{str(e)}")
-
-    def copiar_seleccion(self):
-        """Copiar los datos seleccionados al portapapeles"""
-        seleccion = self.treeview.selection()
-        if not seleccion:
-            messagebox.showwarning("Advertencia", "No hay datos seleccionados")
-            return
-
-        item = self.treeview.item(seleccion[0])
-        texto = "\t".join(str(val) for val in item["values"])
-        pyperclip.copy(texto)
-        messagebox.showinfo("Éxito", "Datos copiados al portapapeles")
-
     def buscar_por_lote(self):
         """Buscar registros por número de lote"""
         lote_buscado = self.lot_entry.get().strip()
@@ -586,7 +615,52 @@ class BitacoraCTApp:
         
         messagebox.showinfo("Información", f"No se encontró el Lote: {lote_buscado}")
 
-    # ============ Funciones para gráficas ============
+    def generar_csv(self):
+        """Generar un archivo CSV con todos los datos de la bitácora"""
+        try:
+            # Obtener los datos del Excel
+            datos = self.load_data()
+            
+            if not datos:
+                messagebox.showwarning("Advertencia", "No hay datos para exportar")
+                return
+            
+            # Crear el nombre del archivo con fecha y hora
+            fecha_hora = datetime.now().strftime("%Y%m%d_%H%M%S")
+            nombre_archivo = f"Bitacora_CT_{fecha_hora}.csv"
+            
+            # Preguntar al usuario dónde guardar el archivo
+            from tkinter import filedialog
+            ruta_guardado = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*")],
+                initialfile=nombre_archivo,
+                title="Guardar archivo CSV como..."
+            )
+            
+            if not ruta_guardado:  # El usuario canceló
+                return
+            
+            # Escribir los datos en el archivo CSV
+            import csv
+            with open(ruta_guardado, mode='w', newline='', encoding='utf-8') as archivo:
+                escritor = csv.writer(archivo)
+                
+                # Escribir encabezados
+                encabezados = [
+                    "ID", "Lote", "Part ID", "Equipo", "CT", "CP", "Comentario",
+                    "PCB", "Fecha", "Hora", "Turno", "RCA", "Estatus"
+                ]
+                escritor.writerow(encabezados)
+                
+                # Escribir datos
+                for fila in datos:
+                    escritor.writerow(fila)
+            
+            messagebox.showinfo("Éxito", f"Archivo CSV generado correctamente:\n{ruta_guardado}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo generar el archivo CSV:\n{str(e)}")
 
     def generar_grafica_turnos(self):
         """Generar gráfica de frecuencia de turnos por mes"""
@@ -821,6 +895,410 @@ class BitacoraCTApp:
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo generar la gráfica:\n{str(e)}")
 
+    def centrar_ventana(self):
+        self.root.update()
+        self.root.minsize(1300, 650)
+        x = (self.root.winfo_screenwidth() // 2) - (self.root.winfo_width() // 2)
+        y = (self.root.winfo_screenheight() // 2) - (self.root.winfo_height() // 2)
+        self.root.geometry(f"+{x}+{y}")
+
+####################################################################################################
+
+class DefectReportApp:
+    def __init__(self, root, initial_data=None):
+        self.root = root
+        self.root.title("Sistema de Reporte de Defectos")
+        self.root.geometry("800x800")
+        
+        # Configurar el tema oscuro
+        self.configurar_tema_oscuro()
+        
+        # Variables para almacenar los datos
+        self.part_id = tk.StringVar()
+        self.lot_id = tk.StringVar()
+        self.defect_code = tk.StringVar()
+        self.date = tk.StringVar()
+        self.shift = tk.StringVar()
+        self.what = tk.StringVar()
+        self.why = tk.StringVar()
+        self.where = tk.StringVar()
+        self.when = tk.StringVar()
+        self.who = tk.StringVar()
+        self.how = tk.StringVar()
+        self.how_much = tk.StringVar()
+        self.occurrence = tk.StringVar()
+        self.detection = tk.StringVar()
+        self.systemic = tk.StringVar()
+        
+        # Referencias a los widgets Text
+        self.how_entry = None
+        self.occurrence_entry = None
+        self.detection_entry = None
+        self.systemic_entry = None
+        
+        # Crear interfaz
+        self.create_widgets()
+        
+        # Cargar datos iniciales si se proporcionan
+        if initial_data:
+            self.load_initial_data(initial_data)
+
+    def configurar_tema_oscuro(self):
+        """Configurar el tema forest-dark solo si no está ya cargado"""
+        try:
+            # Revisar si el tema ya existe
+            if "forest-dark" not in self.root.tk.call("ttk::themes"):
+                self.root.tk.call("source", recurso_relativo("forest-dark.tcl"))
+            
+            style = ttk.Style(self.root)
+            style.theme_use("forest-dark")
+
+            # Configuración adicional de colores
+            style.configure('TFrame',)
+            style.configure('TLabel', foreground='white', font=('Arial', 10))
+            style.configure('TButton', font=('Arial', 10))
+            style.configure('Header.TLabel', font=('Arial', 12, 'bold'), foreground='white')
+            style.configure('TCombobox', fieldbackground='#2d2d2d', foreground='white')
+            style.configure('TEntry', fieldbackground='#2d2d2d', foreground='white')
+            
+            self.root.configure(bg='#1e1e1e')
+
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo cargar el tema: {str(e)}")
+
+    def create_widgets(self):
+        # Frame principal
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Frame para datos básicos
+        basic_frame = ttk.LabelFrame(main_frame, text="Datos Básicos del Defecto", padding="10")
+        basic_frame.pack(fill=tk.X, pady=5)
+        
+        # Part ID
+        ttk.Label(basic_frame, text="Part ID:*").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Entry(basic_frame, textvariable=self.part_id, width=30).grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Lot ID
+        ttk.Label(basic_frame, text="Lot ID:*").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Entry(basic_frame, textvariable=self.lot_id, width=30).grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Código Defecto
+        ttk.Label(basic_frame, text="Código Defecto:*").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+        defect_codes = ['KI', 'MH', 'KQ', 'KF', 'KX', "Otro"]
+        ttk.Combobox(basic_frame, textvariable=self.defect_code, values=defect_codes, width=27).grid(row=2, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Fecha
+        ttk.Label(basic_frame, text="Fecha:*").grid(row=3, column=0, sticky=tk.W, padx=5, pady=2)
+        self.date_entry = DateEntry(basic_frame, textvariable=self.date, date_pattern='dd/mm/yyyy', width=27)
+        self.date_entry.grid(row=3, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Turno
+        ttk.Label(basic_frame, text="Turno:*").grid(row=4, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Combobox(basic_frame, textvariable=self.shift, values=["Turno A", "Turno B", "Turno C", "Turno D"], width=27).grid(row=4, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Frame para análisis 5W2H
+        analysis_frame = ttk.LabelFrame(main_frame, text="Análisis del Defecto (5W2H)", padding="10")
+        analysis_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # Configurar el fondo oscuro para los widgets Text
+        text_bg = '#2d2d2d'
+        text_fg = 'white'
+        
+        # What
+        ttk.Label(analysis_frame, text="What (Que ocurrio):*").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Entry(analysis_frame, textvariable=self.what, width=60).grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Why
+        ttk.Label(analysis_frame, text="Why (Por que ocurrio):*").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Entry(analysis_frame, textvariable=self.why, width=60).grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Where
+        ttk.Label(analysis_frame, text="Where (Dónde se detectó):*").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Entry(analysis_frame, textvariable=self.where, width=60).grid(row=2, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Who
+        ttk.Label(analysis_frame, text="Who (Quién lo detectó):*").grid(row=3, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Entry(analysis_frame, textvariable=self.who, width=60).grid(row=3, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # How
+        ttk.Label(analysis_frame, text="How (Cómo se detectó):*").grid(row=4, column=0, sticky=tk.NW, padx=5, pady=2)
+        self.how_entry = tk.Text(
+            analysis_frame, 
+            width=60, 
+            height=3, 
+            wrap=tk.WORD,
+            bg=text_bg,
+            fg=text_fg,
+            insertbackground='white'
+        )
+        self.how_entry.grid(row=4, column=1, padx=5, pady=2)
+        self.how_entry.bind('<KeyRelease>', lambda e: self.how.set(self.how_entry.get("1.0", tk.END)))
+        
+        # How much
+        ttk.Label(analysis_frame, text="How much (Impacto/Cantidad):*").grid(row=5, column=0, sticky=tk.W, padx=5, pady=2)
+        ttk.Entry(analysis_frame, textvariable=self.how_much, width=60).grid(row=5, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Frame para Posible Causa Raíz
+        root_cause_frame = ttk.LabelFrame(main_frame, text="Posible Causa Raíz", padding="10")
+        root_cause_frame.pack(fill=tk.BOTH, pady=5)
+        
+        # Occurrence
+        ttk.Label(root_cause_frame, text="Occurrence:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        self.occurrence_entry = tk.Text(
+            root_cause_frame, 
+            width=60, 
+            height=3, 
+            wrap=tk.WORD,
+            bg=text_bg,
+            fg=text_fg,
+            insertbackground='white'
+        )
+        self.occurrence_entry.grid(row=0, column=1, padx=5, pady=2)
+        self.occurrence_entry.bind('<KeyRelease>', lambda e: self.occurrence.set(self.occurrence_entry.get("1.0", tk.END)))
+        
+        # Detection
+        ttk.Label(root_cause_frame, text="Detection:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        self.detection_entry = tk.Text(
+            root_cause_frame, 
+            width=60, 
+            height=3, 
+            wrap=tk.WORD,
+            bg=text_bg,
+            fg=text_fg,
+            insertbackground='white'
+        )
+        self.detection_entry.grid(row=1, column=1, padx=5, pady=2)
+        self.detection_entry.bind('<KeyRelease>', lambda e: self.detection.set(self.detection_entry.get("1.0", tk.END)))
+        
+        # Systemic
+        ttk.Label(root_cause_frame, text="Systemic:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+        self.systemic_entry = tk.Text(
+            root_cause_frame, 
+            width=60, 
+            height=3, 
+            wrap=tk.WORD,
+            bg=text_bg,
+            fg=text_fg,
+            insertbackground='white'
+        )
+        self.systemic_entry.grid(row=2, column=1, padx=5, pady=2)
+        self.systemic_entry.bind('<KeyRelease>', lambda e: self.systemic.set(self.systemic_entry.get("1.0", tk.END)))
+        
+        # Frame para botones
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=10)
+        
+        # Botones
+        ttk.Button(
+            button_frame, 
+            text="Generar Reporte", 
+            command=self.generate_report,
+            style="Accent.TButton"
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            button_frame, 
+            text="Limpiar Formulario", 
+            command=self.clear_form
+        ).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(
+            button_frame, 
+            text="Salir", 
+            command=self.root.quit
+        ).pack(side=tk.RIGHT, padx=5)
+    
+    def load_initial_data(self, data):
+        """Cargar datos iniciales en el formulario"""
+        self.part_id.set(data.get('part_id', ''))
+        self.lot_id.set(data.get('lot_id', ''))
+        self.defect_code.set(data.get('defect_code', ''))
+        
+        # Convertir fecha de formato mm/dd/yyyy a dd/mm/yyyy si es necesario
+        fecha = data.get('fecha', '')
+        if fecha:
+            try:
+                if '/' in fecha:
+                    mes, dia, anio = fecha.split('/')
+                    self.date.set(f"{dia}/{mes}/{anio}")
+                else:
+                    self.date.set(fecha)
+            except:
+                self.date.set(fecha)
+        
+        turno = data.get('turno', '')
+        if turno:
+            self.shift.set(f"Turno {turno}" if len(turno) == 1 else turno)
+        
+        # Autocompletar campos de análisis con el comentario
+        comentario = data.get('comentario', '')
+        if comentario:
+            self.what.set("Descripción del defecto")
+            self.why.set("Que fue lo que causó el defecto")
+            self.where.set(f"Equipo {data.get('equipo', '')}")
+            self.who.set("Operador/Inspector")
+            self.how_entry.insert("1.0", "Descripción corta de que fue lo que ocurrió")
+            self.how_much.set("Pendiente de determinar")
+            
+            # Sugerir posibles causas basadas en el equipo
+            equipo = data.get('equipo', '')
+            if equipo.startswith('Towa'):
+                self.occurrence_entry.insert("1.0", comentario)
+                self.detection_entry.insert("1.0", "Cuando el equipo Towa detecta un defecto, se detiene automáticamente")
+                self.systemic_entry.insert("1.0", "El equipo No cuenta con un sistema de monitoreo adecuado")
+    
+    def validate_fields(self):
+        required_fields = [
+            (self.part_id, "Part ID"),
+            (self.lot_id, "Lot ID"),
+            (self.defect_code, "Código Defecto"),
+            (self.date, "Fecha"),
+            (self.shift, "Turno"),
+            (self.what, "What"),
+            (self.why, "Why"),
+            (self.where, "Where"),
+            (self.who, "Who"),
+            (self.how, "How"),
+            (self.how_much, "How much")
+        ]
+        
+        for field, name in required_fields:
+            if not field.get().strip():
+                messagebox.showerror("Error", f"El campo {name} es obligatorio")
+                return False
+    
+        return True
+    
+    def clear_form(self):
+        """Limpiar todos los campos del formulario"""
+        # Limpiar todas las variables
+        for var in [self.part_id, self.lot_id, self.defect_code, self.date, 
+                   self.shift, self.what, self.why, self.where, 
+                   self.when, self.who, self.how, self.how_much,
+                   self.occurrence, self.detection, self.systemic]:
+            var.set("")
+        
+        # Limpiar los widgets Text manualmente
+        self.how_entry.delete("1.0", tk.END)
+        self.occurrence_entry.delete("1.0", tk.END)
+        self.detection_entry.delete("1.0", tk.END)
+        self.systemic_entry.delete("1.0", tk.END)
+        
+        # Restablecer valores por defecto
+        self.date.set(datetime.now().strftime('%d/%m/%Y'))
+        self.shift.set("Turno A")
+    
+    def generate_report(self):
+        """Generar el reporte de PowerPoint"""
+        if not self.validate_fields():
+            return
+            
+        try:
+            replacements = {
+                '%PartID%': self.part_id.get(),
+                '%LotID%': self.lot_id.get(),
+                '%CodigoDefecto%': self.defect_code.get(),
+                '%Fecha%': self.date.get(),
+                '%Turno%': self.shift.get(),
+                '%What%': self.what.get(),
+                '%Why%': self.why.get(),
+                '%Where%': self.where.get(),
+                '%When%': self.when.get(),
+                '%Who%': self.who.get(),
+                '%How%': self.how.get(),
+                '%HowMuch%': self.how_much.get(),
+                '%Occurrence%': self.occurrence.get(),
+                '%Detection%': self.detection.get(),
+                '%Systemic%': self.systemic.get()
+            }
+            
+            # Buscar la plantilla en varias ubicaciones posibles
+            template_paths = [
+                recurso_relativo("ppt_test.pptx"),
+                recurso_relativo(os.path.join("templates", "ppt_test.pptx")),
+                "ppt_test.pptx",
+                os.path.join(os.path.dirname(__file__), "templates", "ppt_test.pptx")
+            ]
+            
+            template_path = None
+            for path in template_paths:
+                if os.path.exists(path):
+                    template_path = path
+                    break
+            
+            if not template_path:
+                messagebox.showerror("Error", "No se encontró la plantilla ppt_test.pptx")
+                return
+                
+            prs = Presentation(template_path)
+            
+            def replace_in_shape(shape):
+                if hasattr(shape, 'text'):
+                    original_text = shape.text
+                    for key, value in replacements.items():
+                        if key in original_text:
+                            shape.text = original_text.replace(key, str(value))
+                            for paragraph in shape.text_frame.paragraphs:
+                                for run in paragraph.runs:
+                                    font = run.font
+                                    font.name = 'Calibri'
+                                    font.size = Pt(12)
+                                    font.bold = False
+                                    font.italic = True
+                
+                elif hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                    for paragraph in shape.text_frame.paragraphs:
+                        for run in paragraph.runs:
+                            original_text = run.text
+                            for key, value in replacements.items():
+                                if key in original_text:
+                                    run.text = original_text.replace(key, str(value))
+                                    font = run.font
+                                    font.name = 'Calibri (Body)'
+                                    font.size = Pt(12)
+                                    font.bold = False
+                                    font.italic = True
+            
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    replace_in_shape(shape)
+                    if shape.has_table:
+                        for row in shape.table.rows:
+                            for cell in row.cells:
+                                replace_in_shape(cell)
+                    if shape.shape_type == 6:  # Group shape
+                        for subshape in shape.shapes:
+                            replace_in_shape(subshape)
+            
+            # Mostrar diálogo para guardar
+            default_filename = f"Reporte_{self.part_id.get()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".pptx",
+                filetypes=[("PowerPoint files", "*.pptx"), ("All files", "*.*")],
+                initialfile=default_filename,
+                title="Guardar reporte como..."
+            )
+            
+            if not file_path:
+                return
+            
+            prs.save(file_path)
+            
+            messagebox.showinfo("Éxito", f"Reporte generado exitosamente en:\n{file_path}")
+            
+            # Preguntar si desea abrir el archivo
+            if messagebox.askyesno("Abrir archivo", "¿Desea abrir el reporte generado?"):
+                if os.name == 'nt':
+                    os.startfile(file_path)
+                else:
+                    opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
+                    subprocess.call([opener, file_path])
+        
+        except Exception as e:
+            messagebox.showerror("Error", f"Ocurrió un error al generar el reporte:\n{str(e)}")
+
+####################################################################################################
 if __name__ == "__main__":
     root = tk.Tk()
     app = BitacoraCTApp(root)
